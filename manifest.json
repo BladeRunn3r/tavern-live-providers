@@ -1,0 +1,9 @@
+{
+  "display_name": "Live Providers",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "version": "0.1.0",
+  "minimum_client_version": "1.18.0"
+}
