@@ -47,24 +47,25 @@ function getProviderLabels(picker) {
     return stockProviderLabels.get(picker);
 }
 
-function replaceProviders(lookup, providers) {
+function replaceProviders(lookup, providers, endpointLabels = null) {
     const picker = document.getElementById(lookup.pickerId);
     if (!picker || providers === null) {
         return;
     }
 
     const labels = getProviderLabels(picker);
+    const displayName = value => endpointLabels?.get(value) ?? labels.get(value) ?? value;
     const available = new Set(providers.filter(value => typeof value === 'string' && value.trim()));
     const saved = getSavedProviders(getContext()?.chatCompletionSettings?.[lookup.setting]);
     const retained = saved.filter(value => available.has(value));
     const retainedSet = new Set(retained);
     const unselected = Array.from(available).filter(value => !retainedSet.has(value));
-    unselected.sort((a, b) => (labels.get(a) ?? a).localeCompare(labels.get(b) ?? b));
+    unselected.sort((a, b) => displayName(a).localeCompare(displayName(b)));
 
     const options = picker.multiple ? [] : [new Option(labels.get('') ?? 'Auto', '', false, retained.length === 0)];
     // The native OpenRouter handler reads the selected options in DOM order.
     for (const value of [...unselected, ...retained]) {
-        options.push(new Option(labels.get(value) ?? value, value, false, retainedSet.has(value)));
+        options.push(new Option(displayName(value), value, false, retainedSet.has(value)));
     }
     picker.replaceChildren(...options);
 
@@ -131,6 +132,74 @@ async function inspectResponse(responsePromise) {
     return { response, data };
 }
 
+async function fetchOpenRouterEndpoints(model) {
+    const parts = model.split('/');
+    if (parts.length !== 2 || parts.some(part => !part || part === '.' || part === '..')) {
+        return null;
+    }
+
+    const path = parts.map(encodeURIComponent).join('/');
+    try {
+        // Public catalog only. Use the model ID and omit user credentials.
+        const response = await Reflect.apply(originalFetch, window, [
+            'https://openrouter.ai/api/v1/models/' + path + '/endpoints',
+            { credentials: 'omit', signal: AbortSignal.timeout(2500) },
+        ]);
+        if (!response.ok) {
+            return null;
+        }
+
+        const body = await response.json();
+        const endpoints = body?.data?.endpoints;
+        if (!Array.isArray(endpoints) || endpoints.length === 0) {
+            return null;
+        }
+
+        const labels = new Map();
+        for (const endpoint of endpoints) {
+            const tag = endpoint?.tag;
+            if (typeof tag !== 'string' || !tag.includes('/')) {
+                continue;
+            }
+            const name = endpoint.provider_name;
+            labels.set(tag, typeof name === 'string' && name ? name + ' (' + tag + ')' : tag);
+        }
+        return labels;
+    } catch {
+        return null;
+    }
+}
+
+async function inspectLookup(lookup, model, responsePromise) {
+    const native = inspectResponse(responsePromise);
+    if (lookup.source !== 'openrouter') {
+        return native;
+    }
+
+    const [result, endpointLabels] = await Promise.all([native, fetchOpenRouterEndpoints(model)]);
+    if (!Array.isArray(result.data)) {
+        return result;
+    }
+
+    // A missing endpoint catalog is not evidence that a saved tag disappeared.
+    const saved = getSavedProviders(getContext()?.chatCompletionSettings?.[lookup.setting]);
+    const tags = endpointLabels === null
+        ? saved.filter(value => typeof value === 'string' && value.includes('/'))
+        : Array.from(endpointLabels.keys());
+    if (tags.length === 0) {
+        return result;
+    }
+
+    const providers = Array.from(new Set([...result.data, ...tags]));
+
+    // The native picker uses this response to disable options it cannot find.
+    const headers = new Headers(result.response.headers);
+    headers.delete('content-length');
+    headers.delete('content-encoding');
+    const { status, statusText } = result.response;
+    return { data: providers, response: Response.json(providers, { headers, status, statusText }), endpointLabels };
+}
+
 function currentResponse(result) {
     if (result.data !== undefined) {
         return Response.json(result.data);
@@ -150,7 +219,7 @@ async function applyLookup(lookup, entry) {
 
         const current = latestLookup.get(lookup);
         if (current === entry && model === entry.model) {
-            replaceProviders(lookup, lookup.readProviders(original.data));
+            replaceProviders(lookup, lookup.readProviders(original.data), original.endpointLabels);
             return original.response;
         }
         if (current?.model !== model) {
@@ -192,7 +261,7 @@ function install() {
         }
 
         const { lookup, model } = match;
-        const entry = { model, result: inspectResponse(response) };
+        const entry = { model, result: inspectLookup(lookup, model, response) };
         latestLookup.set(lookup, entry);
         return applyLookup(lookup, entry);
     };

@@ -13,7 +13,10 @@ class Option {
     }
 }
 
-function host({ source, settings = {}, fetch }) {
+function host({
+    source, settings = {}, fetch,
+    fetchEndpoints = async () => new Response(null, { status: 503 }),
+}) {
     const modelId = source === 'openrouter' ? 'model_openrouter_select' : 'model_nanogpt_select';
     const pickerId = source === 'openrouter' ? 'openrouter_providers_chat' : 'nanogpt_provider';
     const options = [];
@@ -54,7 +57,11 @@ function host({ source, settings = {}, fetch }) {
         },
     };
     const window = {
-        fetch,
+        fetch(url, init) {
+            return url.startsWith('https://openrouter.ai/api/v1/models/')
+                ? fetchEndpoints(url, init)
+                : fetch(url, init);
+        },
         SillyTavern: { getContext: () => context },
         jQuery: () => ({
             on: (event, _selector, listener) => handlers.set(event, listener),
@@ -74,6 +81,8 @@ function host({ source, settings = {}, fetch }) {
         document: { getElementById: id => elements[id] ?? null },
         Option,
         Response,
+        Headers,
+        AbortSignal,
         console,
     });
     function lookup(path, id) {
@@ -97,6 +106,51 @@ test('OpenRouter replaces the stock list and preserves the saved order', async (
         ['New Host', 'Stock']);
     assert.deepEqual(state.picker.options.map(option => option.value), ['Other New Host', 'New Host', 'Stock']);
     assert.deepEqual(state.events, ['change.select2']);
+});
+
+test('OpenRouter keeps the broad provider alongside exact endpoint tags', async () => {
+    const state = host({
+        source: 'openrouter',
+        settings: { openrouter_providers: ['wafer/us', 'Wafer'] },
+        fetch: async () => Response.json(['Wafer', 'Wafer', 'Other']),
+        fetchEndpoints: async (url, { credentials, headers }) => {
+            assert.equal(url, 'https://openrouter.ai/api/v1/models/author/model/endpoints');
+            assert.equal(credentials, 'omit');
+            assert.equal(headers, undefined);
+            return Response.json({ data: { endpoints: [
+                { provider_name: 'Wafer', tag: 'wafer/us' },
+                { provider_name: 'Wafer', tag: 'wafer/mxfp4' },
+                { provider_name: 'Wafer', tag: 'wafer/us' },
+                { provider_name: 'Other', tag: 'other' },
+            ] } });
+        },
+    });
+    state.model.value = 'author/model';
+    const response = await state.lookup(openrouter, state.model.value);
+    assert.deepEqual(await response.json(), ['Wafer', 'Other', 'wafer/us', 'wafer/mxfp4']);
+    assert.deepEqual(state.picker.options.map(({ text, value, selected }) => [text, value, selected]), [
+        ['Other', 'Other', false],
+        ['Wafer (wafer/mxfp4)', 'wafer/mxfp4', false],
+        ['Wafer (wafer/us)', 'wafer/us', true],
+        ['Wafer', 'Wafer', true],
+    ]);
+    assert.deepEqual(state.settings.openrouter_providers, ['wafer/us', 'Wafer']);
+    assert.equal(state.notices.length, 0);
+});
+
+test('OpenRouter retains saved endpoint tags if the public catalog fails', async () => {
+    const state = host({
+        source: 'openrouter',
+        settings: { openrouter_providers: ['wafer/us'] },
+        fetch: async () => Response.json(['Wafer']),
+    });
+    state.model.value = 'author/model';
+    const response = await state.lookup(openrouter, state.model.value);
+    assert.deepEqual(await response.json(), ['Wafer', 'wafer/us']);
+    assert.deepEqual(state.picker.options.map(({ value, selected }) => [value, selected]),
+        [['Wafer', false], ['wafer/us', true]]);
+    assert.deepEqual(state.settings.openrouter_providers, ['wafer/us']);
+    assert.equal(state.notices.length, 0);
 });
 
 test('NanoGPT uses live IDs without pinning Auto or changing PAYG', async () => {
