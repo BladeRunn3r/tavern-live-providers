@@ -4,7 +4,7 @@ const lookups = {
         modelId: 'model_openrouter_select',
         pickerId: 'openrouter_providers_chat',
         setting: 'openrouter_providers',
-        readProviders: data => Array.isArray(data) && data.length ? data : null,
+        readProviders: data => Array.isArray(data) ? data : null,
         defaultResponse: [],
     },
     '/api/nanogpt/models/providers': {
@@ -12,13 +12,14 @@ const lookups = {
         modelId: 'model_nanogpt_select',
         pickerId: 'nanogpt_provider',
         setting: 'nanogpt_provider',
-        readProviders: data => data?.supportsProviderSelection && Array.isArray(data.providers)
-            && data.providers.length ? data.providers : null,
+        readProviders: data => typeof data?.supportsProviderSelection === 'boolean' && Array.isArray(data.providers)
+            ? (data.supportsProviderSelection ? data.providers : []) : null,
         defaultResponse: { supportsProviderSelection: false, providers: [] },
     },
 };
 
 const latestLookup = new Map();
+const stockProviderLabels = new WeakMap();
 const originalFetch = window.fetch;
 
 function getContext() {
@@ -35,55 +36,86 @@ function activeModel(lookup) {
     return document.getElementById(lookup.modelId)?.value || null;
 }
 
-function addProviders(lookup, data) {
+function getSavedProviders(value) {
+    return Array.isArray(value) ? value : value ? [value] : [];
+}
+
+function getProviderLabels(picker) {
+    if (!stockProviderLabels.has(picker)) {
+        stockProviderLabels.set(picker, new Map(Array.from(picker.options, option => [option.value, option.text])));
+    }
+    return stockProviderLabels.get(picker);
+}
+
+function replaceProviders(lookup, providers) {
     const picker = document.getElementById(lookup.pickerId);
-    const providers = lookup.readProviders(data);
-    if (!picker || !providers) {
+    if (!picker || providers === null) {
         return;
     }
 
-    // Use exactly the names/IDs the local route returns. The native picker and
-    // request builder already agree on these values.
+    const labels = getProviderLabels(picker);
     const available = new Set(providers.filter(value => typeof value === 'string' && value.trim()));
-    if (available.size === 0) {
+    const saved = getSavedProviders(getContext()?.chatCompletionSettings?.[lookup.setting]);
+    const retained = saved.filter(value => available.has(value));
+    const retainedSet = new Set(retained);
+    const unselected = Array.from(available).filter(value => !retainedSet.has(value));
+    unselected.sort((a, b) => (labels.get(a) ?? a).localeCompare(labels.get(b) ?? b));
+
+    const options = picker.multiple ? [] : [new Option(labels.get('') ?? 'Auto', '', false, retained.length === 0)];
+    // The native OpenRouter handler reads the selected options in DOM order.
+    for (const value of [...unselected, ...retained]) {
+        options.push(new Option(labels.get(value) ?? value, value, false, retainedSet.has(value)));
+    }
+    picker.replaceChildren(...options);
+
+    if (retained.length !== saved.length) {
+        // Keep the request settings in sync with the replacement dropdown.
+        window.jQuery?.(picker).trigger('change');
+        const message = picker.multiple
+            ? 'Removed unavailable OpenRouter providers from the selection.'
+            : 'The saved NanoGPT provider is unavailable for this model. Switched to Auto.';
+        window.toastr?.warning(message, 'Live Providers');
+    } else {
+        window.jQuery?.(picker).trigger('change.select2');
+    }
+}
+
+function preparePresetProviders({ preset }) {
+    if (getContext()?.chatCompletionSettings?.bind_preset_to_connection === false) {
         return;
     }
-
-    const selected = getContext()?.chatCompletionSettings?.[lookup.setting];
-    const saved = new Set(Array.isArray(selected) ? selected : [selected]);
-    const present = new Map(Array.from(picker.options, option => [option.value, option]));
-    let restored = false;
-
-    // A new, unsaved option must never pin a NanoGPT request automatically.
-    for (const value of available) {
-        if (present.has(value)) {
+    for (const lookup of Object.values(lookups)) {
+        const picker = document.getElementById(lookup.pickerId);
+        const values = getSavedProviders(preset?.[lookup.setting]);
+        if (!picker || values.length === 0) {
             continue;
         }
-
-        const wasSaved = saved.has(value);
-        const option = new Option(value, value, false, wasSaved);
-        picker.add(option);
-        present.set(value, option);
-        restored ||= wasSaved;
-    }
-
-    if (restored && picker.multiple) {
-        // The stock handler reads selected values in DOM order.
-        for (const value of saved) {
-            const option = present.get(value);
-            if (option?.selected) {
-                picker.append(option);
-                option.selected = true;
+        const labels = getProviderLabels(picker);
+        const current = new Map(Array.from(picker.options, option => [option.value, option]));
+        // Presets apply their values through the native select before discovery.
+        // Make those values selectable until the selected model's lookup runs.
+        for (const value of values) {
+            const option = current.get(value);
+            if (option) {
+                option.disabled = false;
+            }
+            if (picker.multiple || !option) {
+                picker.append(option ?? new Option(labels.get(value) ?? value, value));
             }
         }
     }
+}
 
-    for (const option of picker.options) {
-        option.disabled = option.value !== '' && !available.has(option.value);
+function restoreOpenRouterDefaults() {
+    const lookup = lookups['/api/openrouter/models/providers'];
+    const model = activeModel(lookup);
+    const picker = document.getElementById(lookup.pickerId);
+    const labels = stockProviderLabels.get(picker);
+    if (model && !model.includes('/') && labels) {
+        // OpenRouter's website default does not have a model-specific lookup.
+        const saved = getSavedProviders(getContext()?.chatCompletionSettings?.[lookup.setting]);
+        replaceProviders(lookup, [...labels.keys(), ...saved]);
     }
-
-    // Refresh Select2 without invoking the app's settings or billing handlers.
-    window.jQuery?.(picker).trigger('change.select2');
 }
 
 async function inspectResponse(responsePromise) {
@@ -118,7 +150,7 @@ async function applyLookup(lookup, entry) {
 
         const current = latestLookup.get(lookup);
         if (current === entry && model === entry.model) {
-            addProviders(lookup, original.data);
+            replaceProviders(lookup, lookup.readProviders(original.data));
             return original.response;
         }
         if (current?.model !== model) {
@@ -183,7 +215,9 @@ function install() {
         }
     }
 
+    window.jQuery?.(document).on('change.liveProviders', '#model_openrouter_select, #chat_completion_source', restoreOpenRouterDefaults);
     const context = getContext();
+    context?.eventSource?.on(context.eventTypes.OAI_PRESET_CHANGED_BEFORE, preparePresetProviders);
     context?.eventSource?.once(context.eventTypes.APP_READY, refreshCurrentModel);
     refreshCurrentModel();
 }
