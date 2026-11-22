@@ -155,16 +155,19 @@ async function fetchOpenRouterEndpoints(model) {
             return null;
         }
 
+        const endpointProviders = new Set(endpoints
+            .filter(endpoint => typeof endpoint?.tag === 'string' && endpoint.tag.includes('/'))
+            .map(endpoint => endpoint.provider_name)
+            .filter(name => typeof name === 'string' && name));
         const labels = new Map();
         for (const endpoint of endpoints) {
             const tag = endpoint?.tag;
-            if (typeof tag !== 'string' || !tag.includes('/')) {
-                continue;
+            const name = endpoint?.provider_name;
+            if (endpointProviders.has(name) && typeof tag === 'string' && tag) {
+                labels.set(tag, name + ' (' + tag + ')');
             }
-            const name = endpoint.provider_name;
-            labels.set(tag, typeof name === 'string' && name ? name + ' (' + tag + ')' : tag);
         }
-        return labels;
+        return { endpointProviders, labels };
     } catch {
         return null;
     }
@@ -176,28 +179,29 @@ async function inspectLookup(lookup, model, responsePromise) {
         return native;
     }
 
-    const [result, endpointLabels] = await Promise.all([native, fetchOpenRouterEndpoints(model)]);
+    const [result, catalog] = await Promise.all([native, fetchOpenRouterEndpoints(model)]);
     if (!Array.isArray(result.data)) {
         return result;
     }
 
     // A missing endpoint catalog is not evidence that a saved tag disappeared.
     const saved = getSavedProviders(getContext()?.chatCompletionSettings?.[lookup.setting]);
-    const tags = endpointLabels === null
-        ? saved.filter(value => typeof value === 'string' && value.includes('/'))
-        : Array.from(endpointLabels.keys());
+    const tags = catalog
+        ? Array.from(catalog.labels.keys())
+        : saved.filter(value => typeof value === 'string' && value.includes('/'));
     if (tags.length === 0) {
         return result;
     }
 
-    const providers = Array.from(new Set([...result.data, ...tags]));
+    const providerNames = result.data.filter(name => !catalog?.endpointProviders.has(name));
+    const providers = Array.from(new Set([...providerNames, ...tags]));
 
     // The native picker uses this response to disable options it cannot find.
     const headers = new Headers(result.response.headers);
     headers.delete('content-length');
     headers.delete('content-encoding');
     const { status, statusText } = result.response;
-    return { data: providers, response: Response.json(providers, { headers, status, statusText }), endpointLabels };
+    return { data: providers, response: Response.json(providers, { headers, status, statusText }), endpointLabels: catalog?.labels };
 }
 
 function currentResponse(result) {

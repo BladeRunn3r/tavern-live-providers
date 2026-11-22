@@ -16,7 +16,7 @@ https://github.com/BladeRunn3r/tavern-live-providers
 
 In **API Connections**, connect to OpenRouter or NanoGPT and choose a model. Open its existing provider picker to see the providers returned for that model. Changing the model triggers a new lookup. On success, the picker keeps your available selections in their existing priority order and shows a notice if it clears an unavailable selection. NanoGPT returns to Auto if it clears your pin. If a lookup fails, the existing options remain. OpenRouter's website default uses the stock provider list because it has no model-specific lookup.
 
-For OpenRouter, a provider name selects the provider normally. When the public catalog returns a dedicated routing tag, the picker also offers that tag, for example **Wafer (wafer/us)**. Choosing it prioritizes that endpoint under your existing OpenRouter fallback settings. If the public endpoint catalog cannot be loaded, the picker uses the app's provider names and keeps saved endpoint selections. The catalog request sends the selected model ID without an API key.
+For OpenRouter providers with endpoint variants, the picker lists the routing tags published for the selected model, for example **Wafer (wafer/us)** and **Wafer (wafer/mxfp4)**. Choosing it prioritizes that endpoint under your existing OpenRouter fallback settings. If the public endpoint catalog cannot be loaded, the picker uses the app's provider names and keeps saved endpoint selections. The catalog request sends the selected model ID without an API key.
 
 ## Maintenance
 

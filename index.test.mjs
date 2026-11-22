@@ -108,7 +108,7 @@ test('OpenRouter replaces the stock list and preserves the saved order', async (
     assert.deepEqual(state.events, ['change.select2']);
 });
 
-test('OpenRouter keeps the broad provider alongside exact endpoint tags', async () => {
+test('OpenRouter lists each real endpoint once for providers with variants', async () => {
     const state = host({
         source: 'openrouter',
         settings: { openrouter_providers: ['wafer/us', 'Wafer'] },
@@ -127,15 +127,14 @@ test('OpenRouter keeps the broad provider alongside exact endpoint tags', async 
     });
     state.model.value = 'author/model';
     const response = await state.lookup(openrouter, state.model.value);
-    assert.deepEqual(await response.json(), ['Wafer', 'Other', 'wafer/us', 'wafer/mxfp4']);
+    assert.deepEqual(await response.json(), ['Other', 'wafer/us', 'wafer/mxfp4']);
     assert.deepEqual(state.picker.options.map(({ text, value, selected }) => [text, value, selected]), [
         ['Other', 'Other', false],
         ['Wafer (wafer/mxfp4)', 'wafer/mxfp4', false],
         ['Wafer (wafer/us)', 'wafer/us', true],
-        ['Wafer', 'Wafer', true],
     ]);
-    assert.deepEqual(state.settings.openrouter_providers, ['wafer/us', 'Wafer']);
-    assert.equal(state.notices.length, 0);
+    assert.deepEqual(state.settings.openrouter_providers, ['wafer/us']);
+    assert.equal(state.notices.length, 1);
 });
 
 test('OpenRouter retains saved endpoint tags if the public catalog fails', async () => {
